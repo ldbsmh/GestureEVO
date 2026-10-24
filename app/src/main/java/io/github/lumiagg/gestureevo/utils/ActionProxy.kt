@@ -265,7 +265,9 @@ class ActionProxy(private val context: Context, linkString: String) {
             }
             val useMiFreeForm = context.settingsStore.readKey(KEY_USE_MI_WINDOW, false)
             val launched = when {
-                freeform && useMiFreeForm -> launchIntentMi(intent)
+                // Mi-Freeform compatible providers first; when none is installed fall back
+                // to the built-in freeform launch so the gesture still opens a small window.
+                freeform && useMiFreeForm -> launchIntentMi(intent) || launchIntent(intent)
                 userId > 0 -> launchAndroidForWork(intent.component)
                 else -> launchIntent(intent)
             }
@@ -421,30 +423,80 @@ class ActionProxy(private val context: Context, linkString: String) {
             return@withContext false
         }
 
+    /** Mi-Freeform 系"广播开小窗"提供方：协议同源，extras 相同，只有包名/action 前缀不同。 */
+    private data class MiFreeformProvider(
+        val packageName: String,
+        /** Z-Flow 加固版要求广播带显式接收器 component。 */
+        val receiver: String? = null,
+        /** Z-Flow 的来源标记 extra（值为提供方包名）。 */
+        val senderExtra: String? = null,
+        /** Z-Flow 用 getIntExtra 读 userId；阳光小窗保持 Long 不变。 */
+        val intUserId: Boolean = false,
+        /** 是否先向提供方领取能力 token（Z-Flow 加固版的 BroadcastAuth）。 */
+        val capabilityProvider: Uri? = null
+    )
+
     private suspend fun launchIntentMi(intent: Intent): Boolean =
         withContext(Dispatchers.Default) {
-            val intentV2 = Intent("com.sunshine.freeform.start_freeform").apply {
-                setPackage("com.sunshine.freeform")
-                // Package name to launch in freeform mode (e.g. com.sunshine.freeform)
-                putExtra("packageName", intent.`package`)
-                // Activity name to launch in freeform mode; note that it may need to be exported.
-                putExtra("activityName", intent.component?.className)
-                // Optional target userId (default 0). Can specify userId for cloned/dual app environments.
-                if (userId > -1) {
-                    putExtra("userId", userId)
+            val submitted = mutableListOf<String>()
+            for (provider in MI_FREEFORM_PROVIDERS) {
+                if (!isPackageInstalled(provider.packageName)) continue
+                val intentV2 = Intent("${provider.packageName}.start_freeform").apply {
+                    setPackage(provider.packageName)
+                    provider.receiver?.let { component = ComponentName(provider.packageName, it) }
+                    // Package name to launch in freeform mode (e.g. com.sunshine.freeform)
+                    putExtra("packageName", intent.`package`)
+                    // Activity name to launch in freeform mode; note that it may need to be exported.
+                    putExtra("activityName", intent.component?.className)
+                    // Optional target userId (default 0). Can specify userId for cloned/dual app environments.
+                    if (userId > -1) {
+                        putExtra("userId", if (provider.intUserId) userId.toInt() else userId)
+                    }
+                    provider.senderExtra?.let { putExtra(it, provider.packageName) }
+                    provider.capabilityProvider?.let { attachCapability(it, this) }
                 }
+                context.sendBroadcast(intentV2)
+                submitted.add(provider.packageName)
             }
-            context.sendBroadcast(intentV2)
 
-            val intentV1 = Intent("com.sunshine.freeform.start_by_mi_freeform")
-            intentV1.setPackage("com.sunshine.freeform")
-            intentV1.putExtra("packageName", intent.`package`)
-            intentV1.putExtra("activityName", intent.component?.flattenToString())
-            context.sendBroadcast(intentV1)
+            // Legacy Sunshine (Mi-Freeform) one-shot broadcast, kept for older versions only.
+            if (isPackageInstalled(PKG_SUNSHINE_FREEFORM)) {
+                val intentV1 = Intent("com.sunshine.freeform.start_by_mi_freeform")
+                intentV1.setPackage(PKG_SUNSHINE_FREEFORM)
+                intentV1.putExtra("packageName", intent.`package`)
+                intentV1.putExtra("activityName", intent.component?.flattenToString())
+                context.sendBroadcast(intentV1)
+            }
             AppLogger.event(LogModule.ACTION, "launch_broadcast_submitted", trace = trace,
-                fields = mapOf("method" to "mi_freeform", "package" to intent.`package`))
-            true
+                fields = mapOf("method" to "mi_freeform", "package" to intent.`package`,
+                    "targets" to submitted.joinToString(",")))
+            submitted.isNotEmpty()
         }
+
+    /**
+     * 领取 Z-Flow 加固版的能力 token 并附到广播上：token 与调用方 UID 绑定，
+     * 需要先在 Z-Flow 设置里把本应用加入"受信任外部调用者"白名单。
+     * 未安装加固版 / 未加白名单时 Provider 会抛 SecurityException，这里静默跳过，
+     * 广播仍然照发，兼容不校验 token 的上游 Z-Flow。
+     */
+    private fun attachCapability(provider: Uri, intent: Intent) {
+        val result = runCatching {
+            context.contentResolver.call(provider, "issueCapability", null, null)
+        }.getOrNull() ?: return
+        val uid = result.getInt(EXTRA_ZFLOW_AUTH_UID, -1)
+        val token = result.getString(EXTRA_ZFLOW_TOKEN)
+        if (uid >= 0 && !token.isNullOrEmpty()) {
+            intent.putExtra(EXTRA_ZFLOW_AUTH_UID, uid)
+            intent.putExtra(EXTRA_ZFLOW_TOKEN, token)
+        }
+    }
+
+    private fun isPackageInstalled(pkg: String): Boolean = try {
+        context.packageManager.getPackageInfo(pkg, 0)
+        true
+    } catch (_: PackageManager.NameNotFoundException) {
+        false
+    }
 
     private fun extractPackageFromUri(uri: String): String? {
         return runCatching {
@@ -547,6 +599,24 @@ class ActionProxy(private val context: Context, linkString: String) {
         private const val NUBIA_FREEFORM_IDENTIFIER = "_WindowReply"
         private var activityOptionsAPIPass = false
         private var launchAssistAPIPass = false
+
+        private const val PKG_SUNSHINE_FREEFORM = "com.sunshine.freeform"
+        private const val PKG_ZFLOW = "io.relimus.zflow"
+        private const val ZFLOW_RECEIVER = "io.relimus.zflow.broadcast.FreeformRequestReceiver"
+        private const val EXTRA_ZFLOW_AUTH_UID = "io.relimus.zflow.extra.auth_uid"
+        private const val EXTRA_ZFLOW_TOKEN = "io.relimus.zflow.extra.token"
+
+        /** 已知的 Mi-Freeform 兼容提供方，启动时按安装情况逐一发送。 */
+        private val MI_FREEFORM_PROVIDERS = listOf(
+            MiFreeformProvider(PKG_SUNSHINE_FREEFORM),
+            MiFreeformProvider(
+                packageName = PKG_ZFLOW,
+                receiver = ZFLOW_RECEIVER,
+                senderExtra = "io.relimus.zflow.extra.sender",
+                intUserId = true,
+                capabilityProvider = Uri.parse("content://io.relimus.zflow.request.auth")
+            )
+        )
 
         /**
          * Nubia / RedMagic freeform protocol requires both identifier and Bundle.

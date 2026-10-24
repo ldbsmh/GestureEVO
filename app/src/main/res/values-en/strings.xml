@@ -994,7 +994,7 @@
     <string name="quick_search_clear_all_history">Clear all history</string>
     <string name="quick_search_clear_history_confirm_message">Clear all search history? This cannot be undone.</string>
     <string name="quick_search_clear_history_confirm_action">Clear</string>
-    <string name="freeform_mode_7_sunshine">Mode 7 (Sunshine / Mi Freeform, app installation required)</string>
+    <string name="freeform_mode_7_sunshine">Mode 7 (Mi-Freeform compatible: Sunshine / Z-Flow, app installation required)</string>
     <string name="action_view_settings_misc_description">Adjust wheel hints, animation and vibration</string>
     <string name="appearance_settings_global_description">Adjust colors, icon packs and corner styles throughout the app</string>
     <string name="appearance_settings_language_description">Choose the app display language</string>
