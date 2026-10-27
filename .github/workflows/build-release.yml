@@ -1,0 +1,83 @@
+# GestureEVO — Release 构建工作流
+# 编译 release 版本（不签名，输出 unsigned APK）。
+#
+# 签名：app/build.gradle.kts 里 release 签名的四个环境变量
+#   GESTUREEVO_KEYSTORE_FILE / GESTUREEVO_KEYSTORE_PASSWORD
+#   GESTUREEVO_KEY_ALIAS     / GESTUREEVO_KEY_PASSWORD
+# 只要不全设置，signingConfig 就为 null，产物即未签名 APK。
+# 本项目刻意不注入签名，由使用者在本地自行签名。
+name: Build Release (unsigned)
+
+on:
+  workflow_dispatch:      # 手动触发
+  push:
+    tags:
+      - 'v*'
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # OCR 模型压缩脚本需要 Python 3.10+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # compileSdk 36 / ndk 27.0.12077973 / cmake 3.22.1，均由 sdkmanager 显式安装；
+      # runner 镜像自带 SDK 与 cmdline-tools，缺失时才下载。
+      - name: Install Android SDK components
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$HOME/android-sdk}"
+          if [ ! -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            mkdir -p "$SDK_ROOT/cmdline-tools/latest"
+            curl -sSL -o /tmp/ct.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/ct.zip -d /tmp/ct
+            mv /tmp/ct/cmdline-tools/* "$SDK_ROOT/cmdline-tools/latest/"
+          fi
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.0.12077973" \
+            "cmake;3.22.1" \
+            "platform-tools"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build release (unsigned)
+        # 不设置任何 GESTUREEVO_KEYSTORE_* 环境变量 → signingConfig 为 null → 未签名产物。
+        # ABSEIL_SOURCE_DIR 留空，走 CMakeLists 里的 FetchContent 在线获取（固定 commit）。
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Show produced APKs
+        run: ls -l app/build/outputs/apk/release/
+
+      - name: Upload unsigned APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GestureEVO-unsigned
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30
