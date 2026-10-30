@@ -433,7 +433,13 @@ class ActionProxy(private val context: Context, linkString: String) {
         /** Z-Flow 用 getIntExtra 读 userId；阳光小窗保持 Long 不变。 */
         val intUserId: Boolean = false,
         /** 是否先向提供方领取能力 token（Z-Flow 加固版的 BroadcastAuth）。 */
-        val capabilityProvider: Uri? = null
+        val capabilityProvider: Uri? = null,
+        /**
+         * true 时用 [explicitAction] 而不是 `<包名>.start_freeform`，并改用 MiFreeForm 的
+         * extras（`packageName` / `componentName` / `userId`，均为 Intent 原生类型）。
+         * MiFreeForm 的接收器是 SESSION_ISOLATED 注册的，需要显式 `setPackage` 才能收到。
+         */
+        val explicitAction: String? = null
     )
 
     private suspend fun launchIntentMi(intent: Intent): Boolean =
@@ -441,6 +447,11 @@ class ActionProxy(private val context: Context, linkString: String) {
             val submitted = mutableListOf<String>()
             for (provider in MI_FREEFORM_PROVIDERS) {
                 if (!isPackageInstalled(provider.packageName)) continue
+                if (provider.explicitAction != null) {
+                    context.sendBroadcast(buildMiFreeFormIntent(provider, intent))
+                    submitted.add(provider.packageName)
+                    continue
+                }
                 val intentV2 = Intent("${provider.packageName}.start_freeform").apply {
                     setPackage(provider.packageName)
                     provider.receiver?.let { component = ComponentName(provider.packageName, it) }
@@ -490,6 +501,28 @@ class ActionProxy(private val context: Context, linkString: String) {
             intent.putExtra(EXTRA_ZFLOW_TOKEN, token)
         }
     }
+
+    /**
+     * MiFreeForm（米窗）的对外入口。协议和阳光小窗/Z-Flow 不是一个：它没有
+     * `<包名>.start_freeform`，只认 [MI_FREEFORM_ACTION]，extras 也是 Intent 原生类型：
+     * - `componentName`: Parcelable 的 ComponentName；
+     * - `userId`: Int，缺省取广播投递用户；
+     * - `packageName`: String，仅作日志/兼容用途，真正启动的是组件。
+     * 接收端不校验发送方（见 YAMFManager 的 ACTION_OPEN_APP 注册），因此无需白名单，
+     * 但必须 setPackage，否则 SESSION_ISOLATED 的动态接收器收不到隐式广播。
+     */
+    private fun buildMiFreeFormIntent(provider: MiFreeformProvider, intent: Intent): Intent =
+        Intent(provider.explicitAction).apply {
+            setPackage(provider.packageName)
+            val component = intent.component
+            if (component != null) {
+                putExtra("componentName", component)
+                putExtra("packageName", component.packageName)
+            } else {
+                intent.`package`?.let { putExtra("packageName", it) }
+            }
+            if (userId > -1) putExtra("userId", userId.toInt())
+        }
 
     private fun isPackageInstalled(pkg: String): Boolean = try {
         context.packageManager.getPackageInfo(pkg, 0)
@@ -602,6 +635,9 @@ class ActionProxy(private val context: Context, linkString: String) {
 
         private const val PKG_SUNSHINE_FREEFORM = "com.sunshine.freeform"
         private const val PKG_ZFLOW = "io.relimus.zflow"
+        private const val PKG_MIFREEFORM = "com.buildsession.betterYAMF"
+        /** MiFreeForm 唯一的对外开窗入口（Protocol.ACTION_OPEN_APP）。 */
+        private const val MI_FREEFORM_ACTION = "com.buildsession.betterYAMF.action.OPEN_APP"
         private const val ZFLOW_RECEIVER = "io.relimus.zflow.broadcast.FreeformRequestReceiver"
         private const val EXTRA_ZFLOW_AUTH_UID = "io.relimus.zflow.extra.auth_uid"
         private const val EXTRA_ZFLOW_TOKEN = "io.relimus.zflow.extra.token"
@@ -615,6 +651,12 @@ class ActionProxy(private val context: Context, linkString: String) {
                 senderExtra = "io.relimus.zflow.extra.sender",
                 intUserId = true,
                 capabilityProvider = Uri.parse("content://io.relimus.zflow.request.auth")
+            ),
+            // MiFreeForm 使用另一套协议：固定 action + ComponentName，见 buildMiFreeFormIntent。
+            MiFreeformProvider(
+                packageName = PKG_MIFREEFORM,
+                intUserId = true,
+                explicitAction = MI_FREEFORM_ACTION
             )
         )
 

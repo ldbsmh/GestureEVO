@@ -1071,7 +1071,7 @@
     <string name="hidden_search_type_gesture">手势动作</string>
     <string name="hidden_search_type_settings">应用设置</string>
     <string name="quick_search_result_options">更多操作</string>
-    <string name="freeform_mode_7_sunshine">模式7(Mi-Freeform 兼容：阳光小窗 / Z-Flow，需安装对应应用)</string>
+    <string name="freeform_mode_7_sunshine">模式7(Mi-Freeform 兼容：阳光小窗 / Z-Flow / 米窗，需安装对应应用)</string>
     <string name="quick_search_clear_input">清空搜索</string>
     <string name="stats_placeholder_count" translatable="false">0</string>
     <string name="stats_placeholder_decimal" translatable="false">0.0</string>
