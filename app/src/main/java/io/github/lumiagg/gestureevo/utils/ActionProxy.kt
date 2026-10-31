@@ -221,7 +221,7 @@ class ActionProxy(private val context: Context, linkString: String) {
             GestureActionType.BUBBLE_APP -> {
                 val target = pkg ?: CurrentPackageProvider.resolveCurrentPackageName() ?: return
                 if (isLauncherPackage(target)) return
-                BubbleLauncher.showAppBubble(context, target, userId, trace)
+                BubbleLauncher.showAppBubble(context, target, userId = userId, trace = trace)
             }
 
             GestureActionType.POINTER -> {
