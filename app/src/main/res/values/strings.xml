@@ -969,6 +969,8 @@
     <string name="gesture_action_freeze_app">冻结应用</string>
     <string name="gesture_action_other_shortcut">其他应用的快捷方式</string>
     <string name="gesture_action_freeform_foreground">小窗前台应用</string>
+    <string name="gesture_action_bubble_app">气泡小窗打开应用</string>
+    <string name="gesture_bubble_request_sent">已发送气泡请求</string>
     <string name="gesture_action_pointer">指针</string>
     <string name="gesture_action_none">无</string>
     <string name="gesture_action_click_through">模拟点击当前位置</string>

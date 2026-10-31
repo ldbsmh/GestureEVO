@@ -461,7 +461,7 @@ class GestureAddActionActivity : AppCompatActivity() {
         actionLink.queryList.clear()
 
         when (type) {
-            GestureActionType.OPEN_APP, GestureActionType.FREEZE_APP -> {
+            GestureActionType.OPEN_APP, GestureActionType.FREEZE_APP, GestureActionType.BUBBLE_APP -> {
                 DefaultSelectAPPBottomSheet(this, lifecycleScope, object : SelectAPPCallBack {
                     override fun selectCompleted(model: APPModel) {
                         actionLink.addParams("pkg", model.pkgName)

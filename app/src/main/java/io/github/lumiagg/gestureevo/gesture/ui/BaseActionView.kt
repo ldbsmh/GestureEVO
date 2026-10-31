@@ -469,7 +469,7 @@ fun gestureActionIcon(context: Context, view: RoundImageTextView, item: GestureA
 
         IconType.OTHER -> {
             when (action) {
-                GestureActionType.OPEN_APP, GestureActionType.RECENT_APP, GestureActionType.OPEN_ACTIVITY, GestureActionType.FREEZE_APP -> view.setImage(
+                GestureActionType.OPEN_APP, GestureActionType.RECENT_APP, GestureActionType.OPEN_ACTIVITY, GestureActionType.FREEZE_APP, GestureActionType.BUBBLE_APP -> view.setImage(
                     IconHelper.getIcon(
                         context, item.firstStagePkg ?: context.packageName
                     )

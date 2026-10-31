@@ -889,6 +889,8 @@
     <string name="gesture_action_freeze_app">Freeze app</string>
     <string name="gesture_action_other_shortcut">Other app shortcuts</string>
     <string name="gesture_action_freeform_foreground">Foreground freeform app</string>
+    <string name="gesture_action_bubble_app">Open app in bubble</string>
+    <string name="gesture_bubble_request_sent">Bubble request sent</string>
     <string name="gesture_action_pointer">Pointer</string>
     <string name="gesture_action_none">None</string>
     <string name="gesture_action_click_through">Simulate tap at current position</string>

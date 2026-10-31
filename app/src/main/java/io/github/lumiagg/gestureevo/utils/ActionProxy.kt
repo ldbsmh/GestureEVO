@@ -218,6 +218,12 @@ class ActionProxy(private val context: Context, linkString: String) {
                 launcherAPP(currentPkg)
             }
 
+            GestureActionType.BUBBLE_APP -> {
+                val target = pkg ?: CurrentPackageProvider.resolveCurrentPackageName() ?: return
+                if (isLauncherPackage(target)) return
+                BubbleLauncher.showAppBubble(context, target, userId, trace)
+            }
+
             GestureActionType.POINTER -> {
                 producePointerEvent(PointerEvent(enable = true, needShowTouchView = !timeout, side = TriggerSide.peek()))
             }
