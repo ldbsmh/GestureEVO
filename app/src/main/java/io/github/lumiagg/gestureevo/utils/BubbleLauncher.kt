@@ -58,10 +58,6 @@ object BubbleLauncher {
                 LogModule.ACTION, "bubble_broadcast_submitted", trace = trace,
                 fields = mapOf("package" to pkg, "target" to TARGET_PACKAGE)
             )
-            android.util.Log.i(
-                "BubbleLauncher",
-                "sendBroadcast -> pkg=$pkg uid=${android.os.Process.myUid()} pid=${android.os.Process.myPid()}"
-            )
             ToastHelper.showInUIThread(context, R.string.gesture_bubble_request_sent)
             true
         } catch (e: Exception) {
