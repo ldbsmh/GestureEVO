@@ -69,10 +69,10 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
       - name: Build signed APK and run tests
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          GESTUREEVO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          GESTUREEVO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          GESTUREEVO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          GESTUREEVO_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          GESTUREEVO_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          GESTUREEVO_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           for name in KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing signing secret: $name"; exit 1; fi
