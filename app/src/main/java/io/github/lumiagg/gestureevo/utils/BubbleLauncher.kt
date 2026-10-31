@@ -45,6 +45,8 @@ object BubbleLauncher {
     ): Boolean {
         return try {
             val intent = Intent(ACTION_SHOW_APP_BUBBLE).apply {
+                // 同时指定包名和动作；SystemUI 的动态接收器只按 action 匹配，
+                // setPackage 是为了不让其它应用的同名接收器截胡。
                 setPackage(TARGET_PACKAGE)
                 putExtra(EXTRA_PACKAGE, pkg)
                 if (!activityName.isNullOrEmpty()) putExtra(EXTRA_ACTIVITY, activityName)
@@ -55,6 +57,10 @@ object BubbleLauncher {
             AppLogger.event(
                 LogModule.ACTION, "bubble_broadcast_submitted", trace = trace,
                 fields = mapOf("package" to pkg, "target" to TARGET_PACKAGE)
+            )
+            android.util.Log.i(
+                "BubbleLauncher",
+                "sendBroadcast -> pkg=$pkg uid=${android.os.Process.myUid()} pid=${android.os.Process.myPid()}"
             )
             ToastHelper.showInUIThread(context, R.string.gesture_bubble_request_sent)
             true
