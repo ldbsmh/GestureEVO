@@ -172,7 +172,8 @@ internal fun actionCategories(
         R.string.quick_setup_category_apps to listOf(
             ActionChoice(GestureActionType.OPEN_APP), ActionChoice(GestureActionType.OPEN_ACTIVITY),
             ActionChoice(GestureActionType.OTHER_SHORTCUT), ActionChoice(GestureActionType.FREEZE_APP),
-            simple(GestureActionType.FREEFORM_FOREGROUND)
+            simple(GestureActionType.FREEFORM_FOREGROUND),
+            ActionChoice(GestureActionType.BUBBLE_APP)
         ),
         R.string.action_category_gestures to listOfNotNull(
             ActionChoice(GestureActionType.SHOW_ACTION_VIEW).takeIf { allowWheel },
