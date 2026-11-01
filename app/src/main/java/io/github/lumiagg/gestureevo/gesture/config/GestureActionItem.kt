@@ -154,7 +154,7 @@ class GestureActionItem {
 enum class GestureActionType {
     SHOW_ACTION_VIEW, CLICK_THROUGH, SCREEN_CONTENT, SCREEN_CONTENT_FULLSCREEN, SCREEN_SEARCH, SEARCH, PIN_POOL, POINTER, KEYBOARD, OPEN_APP, OTHER_SHORTCUT, OTHER_LINK, CLIPBOARD_ACTION, ACC_ACTION,
     RECENT_APP, OPEN_ACTIVITY, FREEZE_APP, FREEFORM_FOREGROUND, OPEN_SHELL, TEMP_DND,
-    BUBBLE_APP,
+    BUBBLE_APP, PAUSE_GESTURE,
     NONE;
 
     fun showName(context: Context): String {
@@ -181,6 +181,7 @@ enum class GestureActionType {
             SEARCH -> context.getString(R.string.gesture_action_search)
             PIN_POOL -> context.getString(R.string.gesture_action_pin_pool)
             TEMP_DND -> context.getString(R.string.gesture_action_temp_dnd)
+            PAUSE_GESTURE -> context.getString(R.string.gesture_action_pause_gesture)
         }
     }
 
