@@ -155,10 +155,11 @@ jobs:
         if: env.SIGNED_BUILD == 'true'
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
-          echo "--- 证书 SHA-256 ---"
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          SHA="$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+          echo "证书 SHA-256: $SHA"
+          echo "::notice title=RELEASE_CERT_SHA256::若还要用 tag 触发 Signed release 工作流，把 $SHA 存为仓库 secret RELEASE_CERT_SHA256"
 
       - name: Show produced APKs
         run: ls -l app/build/outputs/apk/release/

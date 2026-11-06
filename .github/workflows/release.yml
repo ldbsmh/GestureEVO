@@ -73,6 +73,9 @@ jobs:
           GESTUREEVO_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           GESTUREEVO_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           GESTUREEVO_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          # fork 使用自备 keystore 时，用该 secret 覆盖 signing/release-certificate.sha256
+          # 里的官方指纹；不设置则维持上游原有校验。
+          EXPECTED_CERT_SHA256: ${{ secrets.RELEASE_CERT_SHA256 }}
         run: |
           for name in KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing signing secret: $name"; exit 1; fi
@@ -89,18 +92,35 @@ jobs:
           import re
           from pathlib import Path
           report = (Path(os.environ['RUNNER_TEMP']) / 'signing-certificate.txt').read_text()
-          fingerprints = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)', report)
-          expected = Path('signing/release-certificate.sha256').read_text().strip().lower()
-          if [value.lower() for value in fingerprints] != [expected]:
-              raise SystemExit('APK signing certificate does not match the published release identity')
+          fingerprints = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)', report)
+          normalize = lambda value: re.sub(r'[^0-9a-f]', '', value.lower())
+          override = os.environ.get('EXPECTED_CERT_SHA256', '').strip()
+          if override:
+              expected = normalize(override)
+              source = 'secret RELEASE_CERT_SHA256'
+          else:
+              expected = normalize(Path('signing/release-certificate.sha256').read_text())
+              source = 'signing/release-certificate.sha256'
+          if [normalize(value) for value in fingerprints] != [expected]:
+              raise SystemExit(
+                  f'APK signing certificate does not match the published release identity ({source})'
+              )
+          print(f'证书指纹校验通过（来源: {source}）')
           PY
       - name: Prepare APK, checksum and corresponding source
+        env:
+          EXPECTED_CERT_SHA256: ${{ secrets.RELEASE_CERT_SHA256 }}
         run: |
           mkdir -p build/release-assets
           cp app/build/outputs/apk/release/app-release.apk "build/release-assets/GestureEVO-${RELEASE_VERSION}.apk"
           git archive --format=zip --prefix="GestureEVO-${RELEASE_VERSION}/" --output="build/release-assets/GestureEVO-${RELEASE_VERSION}-source.zip" HEAD
           cp LICENSE NOTICE build/release-assets/
-          cp signing/release-certificate.pem signing/release-certificate.sha256 build/release-assets/
+          if [[ -n "${EXPECTED_CERT_SHA256:-}" ]]; then
+            # 使用自备 keystore 时，仓库里的官方证书文件与产物不符，不再一并发布。
+            echo "使用自备证书（RELEASE_CERT_SHA256），跳过发布 signing/release-certificate.*"
+          else
+            cp signing/release-certificate.pem signing/release-certificate.sha256 build/release-assets/
+          fi
           (cd build/release-assets && sha256sum -- *.apk *-source.zip > SHA256SUMS)
       - name: Retain release build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
