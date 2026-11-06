@@ -88,10 +88,12 @@ jobs:
             done
             return 1
           }
-          export KEYSTORE_BASE64="$(pick S_ANDROID_KEYSTORE_B64 S_KEYSTORE_B64 || true)"
-          export GESTUREEVO_KEYSTORE_PASSWORD="$(pick S_ANDROID_STORE_PASS S_STORE_PASS || true)"
-          export GESTUREEVO_KEY_ALIAS="$(pick S_ANDROID_KEY_ALIAS S_KEY_ALIAS || true)"
-          export GESTUREEVO_KEY_PASSWORD="$(pick S_ANDROID_KEY_PASS S_KEY_PASS || true)"
+          # 先赋值再 export：export VAR="$(cmd)" 会触发 shellcheck SC2155
+          KEYSTORE_BASE64="$(pick S_ANDROID_KEYSTORE_B64 S_KEYSTORE_B64 || true)"
+          GESTUREEVO_KEYSTORE_PASSWORD="$(pick S_ANDROID_STORE_PASS S_STORE_PASS || true)"
+          GESTUREEVO_KEY_ALIAS="$(pick S_ANDROID_KEY_ALIAS S_KEY_ALIAS || true)"
+          GESTUREEVO_KEY_PASSWORD="$(pick S_ANDROID_KEY_PASS S_KEY_PASS || true)"
+          export KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD
           for name in KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing signing secret: $name"; exit 1; fi
           done
