@@ -34,16 +34,32 @@ android {
         }
     }
 
-    val signingEnvironment = listOf(
+    // 签名参数由环境变量注入。keyPassword 可省略，缺省时回落到 storePassword
+    // （PKCS12 keystore 里两者本就相同）。
+    val signingKeys = listOf(
         "GESTUREEVO_KEYSTORE_FILE", "GESTUREEVO_KEYSTORE_PASSWORD",
         "GESTUREEVO_KEY_ALIAS", "GESTUREEVO_KEY_PASSWORD",
-    ).map { providers.environmentVariable(it).orNull }
-    val releaseSigning = if (signingEnvironment.all { !it.isNullOrEmpty() }) {
+    )
+    val signingEnvironment = signingKeys.map { providers.environmentVariable(it).orNull }
+    // 三项必需（file/password/alias）。缺任一项时默认降级为未签名产物；
+    // CI 上需要硬失败则设置 GESTUREEVO_REQUIRE_SIGNING=1，避免"以为签了、其实出了 unsigned 包"。
+    val missingSigningKeys = signingKeys.take(3).zip(signingEnvironment).filter { it.second.isNullOrEmpty() }
+        .map { it.first }
+    // 注意：Kotlin 的 "1".toBoolean() 为 false，只认 "true"，这里显式接受 1/true/yes/on。
+    val requireReleaseSigning = providers.environmentVariable("GESTUREEVO_REQUIRE_SIGNING").orNull
+        ?.lowercase()
+        ?.let { it == "1" || it == "true" || it == "yes" || it == "on" } ?: false
+    if (requireReleaseSigning && missingSigningKeys.isNotEmpty()) {
+        throw GradleException(
+            "GESTUREEVO_REQUIRE_SIGNING=1 但缺少签名环境变量: ${missingSigningKeys.joinToString()}"
+        )
+    }
+    val releaseSigning = if (missingSigningKeys.isEmpty()) {
         signingConfigs.create("release") {
             storeFile = file(requireNotNull(signingEnvironment[0]))
             storePassword = signingEnvironment[1]
             keyAlias = signingEnvironment[2]
-            keyPassword = signingEnvironment[3]
+            keyPassword = signingEnvironment[3] ?: signingEnvironment[1]
         }
     } else null
 

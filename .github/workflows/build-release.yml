@@ -1,12 +1,21 @@
 # GestureEVO — Release 构建工作流
-# 编译 release 版本（不签名，输出 unsigned APK）。
 #
-# 签名：app/build.gradle.kts 里 release 签名的四个环境变量
-#   GESTUREEVO_KEYSTORE_FILE / GESTUREEVO_KEYSTORE_PASSWORD
-#   GESTUREEVO_KEY_ALIAS     / GESTUREEVO_KEY_PASSWORD
-# 只要不全设置，signingConfig 就为 null，产物即未签名 APK。
-# 本项目刻意不注入签名，由使用者在本地自行签名。
-name: Build Release (unsigned)
+# 有签名 secret → 产出**已签名** release APK，并用 apksigner 校验；
+# 无签名 secret（如 PR 构建）→ 产出 unsigned APK 并给出警告。
+# secret 只配了一部分 → 直接失败，避免"以为签了、其实出了 unsigned 包"。
+#
+# 需要的 secret（二选一命名，脚本会自动探测）：
+#   KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+#   GESTUREEVO_KEYSTORE_BASE64 / GESTUREEVO_KEYSTORE_PASSWORD / GESTUREEVO_KEY_ALIAS / GESTUREEVO_KEY_PASSWORD
+# KEYSTORE_BASE64 必须是 .jks 文件完整的 base64 内容：
+#   base64 -w0 release.jks | pbcopy      # macOS
+#   certutil -encode release.jks out.b64 # Windows 后用文本方式取正文
+# KEY_PASSWORD 可省略，缺省时回落到 KEYSTORE_PASSWORD（PKCS12 keystore 的实际行为即如此）。
+#
+# 本仓库的 signing/release-certificate.sha256 是上游官方证书指纹，
+# 使用自备 keystore 时该指纹不再适用，
+# 也因此不要用 tag 触发上游的 release.yml（它会在指纹校验处失败）。
+name: Build Release
 
 on:
   workflow_dispatch:      # 手动触发
@@ -20,10 +29,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # 密钥若配在名为 release 的 environment 下，必须声明这一行才读得到；
+    # 若密钥是仓库级 secret，且该 environment 配了必需审批人，删掉这一行可避免每次 push 都要人工批准。
+    environment: release
 
     steps:
       - name: Checkout
@@ -66,18 +82,91 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build release (unsigned)
-        # 不设置任何 GESTUREEVO_KEYSTORE_* 环境变量 → signingConfig 为 null → 未签名产物。
+      - name: Prepare signing material
+        env:
+          SECRET_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          ALT_KEYSTORE_B64: ${{ secrets.GESTUREEVO_KEYSTORE_BASE64 }}
+          ALT_STORE_PASS: ${{ secrets.GESTUREEVO_KEYSTORE_PASSWORD }}
+          ALT_KEY_ALIAS: ${{ secrets.GESTUREEVO_KEY_ALIAS }}
+          ALT_KEY_PASS: ${{ secrets.GESTUREEVO_KEY_PASSWORD }}
+        run: |
+          set -uo pipefail
+
+          # 按候选名依次取值，兼容两套命名
+          pick() {
+            for name in "$@"; do
+              if [ -n "${!name:-}" ]; then printf '%s' "${!name}"; return 0; fi
+            done
+            return 1
+          }
+
+          KEYSTORE_B64="$(pick SECRET_KEYSTORE_B64 ALT_KEYSTORE_B64 || true)"
+          STORE_PASS="$(pick SECRET_STORE_PASS ALT_STORE_PASS || true)"
+          KEY_ALIAS_VAL="$(pick SECRET_KEY_ALIAS ALT_KEY_ALIAS || true)"
+          KEY_PASS_VAL="$(pick SECRET_KEY_PASS ALT_KEY_PASS || true)"
+
+          missing=()
+          [ -n "$KEYSTORE_B64" ]   || missing+=("KEYSTORE_BASE64")
+          [ -n "$STORE_PASS" ]     || missing+=("KEYSTORE_PASSWORD")
+          [ -n "$KEY_ALIAS_VAL" ]  || missing+=("KEY_ALIAS")
+
+          if [ "${#missing[@]}" -eq 3 ]; then
+            echo "::warning::未配置签名 secret，本轮产出未签名 APK（PR 构建属预期情况）。"
+            echo "SIGNED_BUILD=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::签名 secret 不完整，缺少: ${missing[*]}"
+            echo "::error::要么补齐全部必需项，要么全部留空（产出未签名包）。"
+            exit 1
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/gestureevo-release.jks"
+          printf '%s' "$KEYSTORE_B64" | tr -d '\r\n \t' | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "keystore 已解码：$(wc -c < "$KEYSTORE_PATH") bytes"
+
+          # 先用 keytool 验一遍密码与 alias，失败信息比 Gradle 清晰得多
+          if ! keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASS" \
+                 -alias "$KEY_ALIAS_VAL" > /dev/null 2>&1; then
+            echo "::error::keystore 校验失败：请确认 KEYSTORE_PASSWORD 与 KEY_ALIAS 匹配该 .jks"
+            exit 1
+          fi
+          echo "keystore 校验通过，alias=$KEY_ALIAS_VAL"
+
+          {
+            echo "GESTUREEVO_KEYSTORE_FILE=$KEYSTORE_PATH"
+            echo "GESTUREEVO_KEYSTORE_PASSWORD=$STORE_PASS"
+            echo "GESTUREEVO_KEY_ALIAS=$KEY_ALIAS_VAL"
+            echo "GESTUREEVO_KEY_PASSWORD=${KEY_PASS_VAL:-$STORE_PASS}"
+            echo "GESTUREEVO_REQUIRE_SIGNING=1"
+            echo "SIGNED_BUILD=true"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release
         # ABSEIL_SOURCE_DIR 留空，走 CMakeLists 里的 FetchContent 在线获取（固定 commit）。
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify signature
+        if: env.SIGNED_BUILD == 'true'
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          echo "--- 证书 SHA-256 ---"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'
 
       - name: Show produced APKs
         run: ls -l app/build/outputs/apk/release/
 
-      - name: Upload unsigned APK artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GestureEVO-unsigned
+          name: GestureEVO-release
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
