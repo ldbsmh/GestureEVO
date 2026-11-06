@@ -69,11 +69,29 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
       - name: Build signed APK and run tests
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          GESTUREEVO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          GESTUREEVO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          GESTUREEVO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # 上游现用 ANDROID_*，旧版为 KEYSTORE_*，两套都探测
+          S_ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          S_ANDROID_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          S_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          S_ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          S_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          # fork 使用自备 keystore 时，用该 secret 覆盖 signing/release-certificate.sha256
+          # 里的官方指纹；不设置则维持上游原有校验。
+          EXPECTED_CERT_SHA256: ${{ secrets.RELEASE_CERT_SHA256 }}
         run: |
+          pick() {
+            for name in "$@"; do
+              if [ -n "${!name:-}" ]; then printf '%s' "${!name}"; return 0; fi
+            done
+            return 1
+          }
+          export KEYSTORE_BASE64="$(pick S_ANDROID_KEYSTORE_B64 S_KEYSTORE_B64 || true)"
+          export GESTUREEVO_KEYSTORE_PASSWORD="$(pick S_ANDROID_STORE_PASS S_STORE_PASS || true)"
+          export GESTUREEVO_KEY_ALIAS="$(pick S_ANDROID_KEY_ALIAS S_KEY_ALIAS || true)"
+          export GESTUREEVO_KEY_PASSWORD="$(pick S_ANDROID_KEY_PASS S_KEY_PASS || true)"
           for name in KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing signing secret: $name"; exit 1; fi
           done
@@ -89,18 +107,35 @@ jobs:
           import re
           from pathlib import Path
           report = (Path(os.environ['RUNNER_TEMP']) / 'signing-certificate.txt').read_text()
-          fingerprints = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)', report)
-          expected = Path('signing/release-certificate.sha256').read_text().strip().lower()
-          if [value.lower() for value in fingerprints] != [expected]:
-              raise SystemExit('APK signing certificate does not match the published release identity')
+          fingerprints = re.findall(r'Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)', report)
+          normalize = lambda value: re.sub(r'[^0-9a-f]', '', value.lower())
+          override = os.environ.get('EXPECTED_CERT_SHA256', '').strip()
+          if override:
+              expected = normalize(override)
+              source = 'secret RELEASE_CERT_SHA256'
+          else:
+              expected = normalize(Path('signing/release-certificate.sha256').read_text())
+              source = 'signing/release-certificate.sha256'
+          if [normalize(value) for value in fingerprints] != [expected]:
+              raise SystemExit(
+                  f'APK signing certificate does not match the published release identity ({source})'
+              )
+          print(f'证书指纹校验通过（来源: {source}）')
           PY
       - name: Prepare APK, checksum and corresponding source
+        env:
+          EXPECTED_CERT_SHA256: ${{ secrets.RELEASE_CERT_SHA256 }}
         run: |
           mkdir -p build/release-assets
           cp app/build/outputs/apk/release/app-release.apk "build/release-assets/GestureEVO-${RELEASE_VERSION}.apk"
           git archive --format=zip --prefix="GestureEVO-${RELEASE_VERSION}/" --output="build/release-assets/GestureEVO-${RELEASE_VERSION}-source.zip" HEAD
           cp LICENSE NOTICE build/release-assets/
-          cp signing/release-certificate.pem signing/release-certificate.sha256 build/release-assets/
+          if [[ -n "${EXPECTED_CERT_SHA256:-}" ]]; then
+            # 使用自备 keystore 时，仓库里的官方证书文件与产物不符，不再一并发布。
+            echo "使用自备证书（RELEASE_CERT_SHA256），跳过发布 signing/release-certificate.*"
+          else
+            cp signing/release-certificate.pem signing/release-certificate.sha256 build/release-assets/
+          fi
           (cd build/release-assets && sha256sum -- *.apk *-source.zip > SHA256SUMS)
       - name: Retain release build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
