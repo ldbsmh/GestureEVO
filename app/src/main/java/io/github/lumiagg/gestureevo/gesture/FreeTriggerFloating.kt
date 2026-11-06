@@ -4,9 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
-import android.view.ViewTreeObserver
 import android.view.WindowManager
 import io.github.lumiagg.gestureevo.R
 import io.github.lumiagg.gestureevo.floating.BaseFloatingWindow
@@ -21,12 +21,12 @@ import io.github.lumiagg.gestureevo.utils.DynamicColorUtils
 import io.github.lumiagg.gestureevo.utils.ScreenUtil
 import io.github.lumiagg.gestureevo.utils.dp2px
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
+import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
 
@@ -64,14 +64,24 @@ class FreeTriggerFloating(
         const val TAG = "FreeTriggerFloating"
         var realTriggerIsEnable = false
         var expectTriggerIsEnable = true
+
+        @Volatile
+        private var instanceRef: WeakReference<FreeTriggerFloating>? = null
+
+        fun current(): FreeTriggerFloating? = instanceRef?.get()
     }
 
     private val triggerViews = mutableMapOf<String, TriggerViewGroup>()
+    private val actionCooldownJobs = mutableMapOf<String, Job>()
+    private val cooldownDeadlines = mutableMapOf<String, Long>()
+    private val cooldownTriggerNames = mutableMapOf<String, String>()
+    private val cooldownTotalDurations = mutableMapOf<String, Long>()
     private var triggers = listOf<FreeTriggerConfig>()
     private var lastPackageName: String? = context.packageName
     private var lastOrientation: Int = Configuration.ORIENTATION_UNDEFINED
     private var guidePreviewActive = false
     init {
+        instanceRef = WeakReference(this)
         context.launch {
             reloadTriggers()
             checkTriggerOrientation()
@@ -112,6 +122,11 @@ class FreeTriggerFloating(
         // Remove view groups that are no longer needed
         val tagsToRemove = triggerViews.keys - expectedViewTags
         tagsToRemove.forEach { tag ->
+            actionCooldownJobs.remove(tag)?.cancel()
+            cooldownDeadlines.remove(tag)
+            cooldownTriggerNames.remove(tag)
+            cooldownTotalDurations.remove(tag)
+            PauseGestureNotification.cancel(context, tag)
             triggerViews[tag]?.cleanUp { detachViewSafely(it, immediate = false) }
             triggerViews.remove(tag)
         }
@@ -132,6 +147,7 @@ class FreeTriggerFloating(
         }
 
         triggers = newConfigs
+        refreshTriggerVisibility()
     }
 
     private fun createTriggerViewGroup(config: FreeTriggerConfig) {
@@ -184,7 +200,8 @@ class FreeTriggerFloating(
             this.isMirror = isMirror
             val color = context.getColor(R.color.transparent)
             setBackgroundColor(color)
-            if (guidePreviewActive) visibility = View.GONE
+            // Apply package/orientation rules after the whole group has been created.
+            visibility = View.GONE
         }
 
         addViewSafely(view, layoutParams)
@@ -224,9 +241,99 @@ class FreeTriggerFloating(
         }
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    /** A trigger group includes both the original area and its mirror. */
+    suspend fun pauseGestureTemporarily(
+        sourceTriggerTag: String?,
+        durationMs: Long,
+        allTriggers: Boolean
+    ) = withContext(Dispatchers.Main) {
+        val tags = if (allTriggers) triggerViews.keys.toList() else listOfNotNull(sourceTriggerTag)
+        tags.forEach { pauseTriggerTemporarily(it, durationMs) }
+    }
+
+    suspend fun pauseTriggerTemporarily(
+        tag: String,
+        durationMs: Long,
+        triggerName: String? = null,
+        extend: Boolean = false
+    ): Boolean = withContext(Dispatchers.Main) {
+        if (triggerViews[tag] == null) return@withContext false
+        // Deadline-based: the timestamp is the source of truth, so a repeated pause only
+        // pushes the deadline out and visibility checks cannot restore the trigger early.
+        val now = SystemClock.elapsedRealtime()
+        val base = if (extend) maxOf(cooldownDeadlines[tag] ?: 0L, now) else now
+        cooldownDeadlines[tag] = base + durationMs
+        setVisibility(tag, false)
+        val displayName = sequenceOf(
+            triggerName,
+            cooldownTriggerNames[tag],
+            triggers.find { it.tag == tag }?.name
+        ).firstOrNull { !it.isNullOrBlank() } ?: tag
+        cooldownTriggerNames[tag] = displayName
+        // Total time is cumulative across extensions, mirroring how the DND notification
+        // reports the whole session rather than only what is left.
+        val totalMs = if (extend) {
+            (cooldownTotalDurations[tag] ?: 0L) + durationMs
+        } else {
+            durationMs
+        }
+        cooldownTotalDurations[tag] = totalMs
+        PauseGestureNotification.show(
+            context,
+            tag,
+            displayName,
+            totalMs,
+            remainingMs = (cooldownDeadlines[tag] ?: 0L) - now
+        )
+        // A repeated pause replaces the pending restore so only one timer per trigger survives.
+        actionCooldownJobs.remove(tag)?.cancel()
+        val job = context.launch {
+            while (true) {
+                val remaining = (cooldownDeadlines[tag] ?: break) - SystemClock.elapsedRealtime()
+                if (remaining <= 0L) break
+                delay(remaining)
+            }
+            if (cooldownDeadlines[tag]?.let { it <= SystemClock.elapsedRealtime() } == true) {
+                clearPauseState(tag)
+                val currentGroup = triggerViews[tag] ?: return@launch
+                checkTriggerVisibility(currentGroup.originalView)
+            }
+        }
+        actionCooldownJobs[tag] = job
+        job.invokeOnCompletion {
+            if (actionCooldownJobs[tag] === job) actionCooldownJobs.remove(tag)
+        }
+        true
+    }
+
+    /** Ends a temporary pause right away, e.g. from the countdown notification. */
+    suspend fun restorePausedTrigger(tag: String) = withContext(Dispatchers.Main) {
+        val hadDeadline = cooldownDeadlines.remove(tag) != null
+        cooldownTriggerNames.remove(tag)
+        cooldownTotalDurations.remove(tag)
+        actionCooldownJobs.remove(tag)?.cancel()
+        PauseGestureNotification.cancel(context, tag)
+        if (!hadDeadline) return@withContext
+        val currentGroup = triggerViews[tag] ?: return@withContext
+        checkTriggerVisibility(currentGroup.originalView)
+    }
+
+    private fun clearPauseState(tag: String) {
+        cooldownDeadlines.remove(tag)
+        cooldownTriggerNames.remove(tag)
+        cooldownTotalDurations.remove(tag)
+        actionCooldownJobs.remove(tag)
+        PauseGestureNotification.cancel(context, tag)
+    }
+
+    private fun isCoolingDown(tag: String): Boolean =
+        (cooldownDeadlines[tag] ?: 0L) > SystemClock.elapsedRealtime()
+
     suspend fun setVisibility(tag: String, isVisible: Boolean): Boolean =
         withContext(Dispatchers.Main) {
+            if (isVisible && isCoolingDown(tag)) {
+                return@withContext triggerViews.containsKey(tag)
+            }
             if (guidePreviewActive) {
                 triggerViews[tag]?.getAllViews()?.forEach { it.visibility = View.GONE }
                 return@withContext triggerViews.containsKey(tag)
@@ -236,21 +343,13 @@ class FreeTriggerFloating(
             val targetVisible = if (isVisible) View.VISIBLE else View.GONE
             var result = true
 
-            // Set visibility for all views in the group
+            // Update both windows in the same main-thread turn. Waiting for a draw
+            // here can stall package updates, especially when a window is hidden
+            // or not attached yet.
             viewGroup.getAllViews().forEach { view ->
                 if (view.visibility != targetVisible) {
                     try {
-                        result = result && suspendCancellableCoroutine { continuation ->
-                            view.visibility = targetVisible
-                            val listener = object : ViewTreeObserver.OnPreDrawListener {
-                                override fun onPreDraw(): Boolean {
-                                    view.viewTreeObserver.removeOnPreDrawListener(this)
-                                    continuation.resume(true) {}
-                                    return true
-                                }
-                            }
-                            view.viewTreeObserver.addOnPreDrawListener(listener)
-                        }
+                        view.visibility = targetVisible
                     } catch (e: Exception) {
                         e.printStackTrace()
                         result = false
@@ -285,12 +384,12 @@ class FreeTriggerFloating(
         }
     }
 
-    suspend fun checkTriggerPackage(targetPkg: String) {
+    suspend fun checkTriggerPackage(targetPkg: String) = withContext(Dispatchers.Main) {
         lastPackageName = targetPkg
         refreshTriggerVisibility()
     }
 
-    suspend fun checkTriggerOrientation(newOrientation: Int = Configuration.ORIENTATION_UNDEFINED) {
+    suspend fun checkTriggerOrientation(newOrientation: Int = Configuration.ORIENTATION_UNDEFINED) = withContext(Dispatchers.Main) {
         lastOrientation = resolveOrientation(newOrientation)
         refreshTriggerVisibility()
     }
@@ -388,10 +487,12 @@ class FreeTriggerFloating(
             val visibleByOrientation = isOrientationAllowed(trigger, currentOrientation)
             val visibleByPackage = currentPackage?.let { isPackageAllowed(trigger, it) } ?: true
 
-            triggerViews[trigger.tag]?.originalView?.let {
-                it.enabledOrientation = visibleByOrientation
-                it.enabledPackage = visibleByPackage
-                checkTriggerVisibility(it)
+            triggerViews[trigger.tag]?.let { group ->
+                group.getAllViews().forEach { view ->
+                    view.enabledOrientation = visibleByOrientation
+                    view.enabledPackage = visibleByPackage
+                }
+                checkTriggerVisibility(group.originalView)
             }
         }
         adjustPositionsForScreenSize()
@@ -421,26 +522,19 @@ class FreeTriggerFloating(
     }
 
     private fun isPackageAllowed(trigger: FreeTriggerConfig, targetPkg: String): Boolean {
-        if (targetPkg == context.packageName) return true
-
-        val useBlacklist = trigger.getState(FreeTriggerConfig.FLAG_BLACKLIST)
-        val useWhitelist = trigger.getState(FreeTriggerConfig.FLAG_WHITELIST)
-
-        return when {
-            useBlacklist && useWhitelist -> {
-                val inWhitelist =
-                    trigger.whiteList.isEmpty() || trigger.whiteList.contains(targetPkg)
-                val notBlacklisted = !trigger.blackList.contains(targetPkg)
-                inWhitelist && notBlacklisted
-            }
-
-            useBlacklist -> !trigger.blackList.contains(targetPkg)
-            useWhitelist -> trigger.whiteList.isEmpty() || trigger.whiteList.contains(targetPkg)
-            else -> true
-        }
+        return trigger.isPackageAllowed(targetPkg, context.packageName)
     }
 
     fun destroy() {
+        actionCooldownJobs.values.forEach(Job::cancel)
+        actionCooldownJobs.clear()
+        cooldownDeadlines.clear()
+        cooldownTotalDurations.clear()
+        cooldownTriggerNames.keys.toList().forEach { tag ->
+            PauseGestureNotification.cancel(context, tag)
+        }
+        cooldownTriggerNames.clear()
+        if (instanceRef?.get() === this) instanceRef = null
         triggerViews.values.forEach { viewGroup ->
             viewGroup.cleanUp { detachViewSafely(it, immediate = false) }
         }
