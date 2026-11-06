@@ -4,8 +4,9 @@
 # 无签名 secret（如 PR 构建）→ 产出 unsigned APK 并给出警告。
 # secret 只配了一部分 → 直接失败，避免"以为签了、其实出了 unsigned 包"。
 #
-# 需要的 secret（二选一命名，脚本会自动探测）：
-#   KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+# 需要的 secret（三套命名任选其一，脚本会按 ANDROID_* → KEYSTORE_* → GESTUREEVO_* 顺序探测）：
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+#   KEYSTORE_BASE64         / KEYSTORE_PASSWORD         / KEY_ALIAS         / KEY_PASSWORD
 #   GESTUREEVO_KEYSTORE_BASE64 / GESTUREEVO_KEYSTORE_PASSWORD / GESTUREEVO_KEY_ALIAS / GESTUREEVO_KEY_PASSWORD
 # KEYSTORE_BASE64 必须是 .jks 文件完整的 base64 内容：
 #   base64 -w0 release.jks | pbcopy      # macOS
@@ -84,18 +85,23 @@ jobs:
 
       - name: Prepare signing material
         env:
-          SECRET_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
-          SECRET_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          SECRET_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
-          ALT_KEYSTORE_B64: ${{ secrets.GESTUREEVO_KEYSTORE_BASE64 }}
-          ALT_STORE_PASS: ${{ secrets.GESTUREEVO_KEYSTORE_PASSWORD }}
-          ALT_KEY_ALIAS: ${{ secrets.GESTUREEVO_KEY_ALIAS }}
-          ALT_KEY_PASS: ${{ secrets.GESTUREEVO_KEY_PASSWORD }}
+          # 三套命名都探测：上游现用 ANDROID_*，旧版为 KEYSTORE_*，gradle 变量名派生的为 GESTUREEVO_*
+          SECRET_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ALT_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          ALT_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          ALT_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ALT_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          ALT2_KEYSTORE_B64: ${{ secrets.GESTUREEVO_KEYSTORE_BASE64 }}
+          ALT2_STORE_PASS: ${{ secrets.GESTUREEVO_KEYSTORE_PASSWORD }}
+          ALT2_KEY_ALIAS: ${{ secrets.GESTUREEVO_KEY_ALIAS }}
+          ALT2_KEY_PASS: ${{ secrets.GESTUREEVO_KEY_PASSWORD }}
         run: |
           set -uo pipefail
 
-          # 按候选名依次取值，兼容两套命名
+          # 按候选名依次取值，兼容三套命名
           pick() {
             for name in "$@"; do
               if [ -n "${!name:-}" ]; then printf '%s' "${!name}"; return 0; fi
@@ -103,10 +109,10 @@ jobs:
             return 1
           }
 
-          KEYSTORE_B64="$(pick SECRET_KEYSTORE_B64 ALT_KEYSTORE_B64 || true)"
-          STORE_PASS="$(pick SECRET_STORE_PASS ALT_STORE_PASS || true)"
-          KEY_ALIAS_VAL="$(pick SECRET_KEY_ALIAS ALT_KEY_ALIAS || true)"
-          KEY_PASS_VAL="$(pick SECRET_KEY_PASS ALT_KEY_PASS || true)"
+          KEYSTORE_B64="$(pick SECRET_KEYSTORE_B64 ALT_KEYSTORE_B64 ALT2_KEYSTORE_B64 || true)"
+          STORE_PASS="$(pick SECRET_STORE_PASS ALT_STORE_PASS ALT2_STORE_PASS || true)"
+          KEY_ALIAS_VAL="$(pick SECRET_KEY_ALIAS ALT_KEY_ALIAS ALT2_KEY_ALIAS || true)"
+          KEY_PASS_VAL="$(pick SECRET_KEY_PASS ALT_KEY_PASS ALT2_KEY_PASS || true)"
 
           missing=()
           [ -n "$KEYSTORE_B64" ]   || missing+=("KEYSTORE_BASE64")
@@ -155,11 +161,10 @@ jobs:
         if: env.SIGNED_BUILD == 'true'
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
-          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
-          SHA="$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
-          echo "证书 SHA-256: $SHA"
-          echo "::notice title=RELEASE_CERT_SHA256::若还要用 tag 触发 Signed release 工作流，把 $SHA 存为仓库 secret RELEASE_CERT_SHA256"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          echo "--- 证书 SHA-256 ---"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'
 
       - name: Show produced APKs
         run: ls -l app/build/outputs/apk/release/

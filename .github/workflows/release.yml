@@ -69,14 +69,29 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
       - name: Build signed APK and run tests
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          GESTUREEVO_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          GESTUREEVO_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          GESTUREEVO_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          # 上游现用 ANDROID_*，旧版为 KEYSTORE_*，两套都探测
+          S_ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          S_ANDROID_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          S_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          S_ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          S_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
           # fork 使用自备 keystore 时，用该 secret 覆盖 signing/release-certificate.sha256
           # 里的官方指纹；不设置则维持上游原有校验。
           EXPECTED_CERT_SHA256: ${{ secrets.RELEASE_CERT_SHA256 }}
         run: |
+          pick() {
+            for name in "$@"; do
+              if [ -n "${!name:-}" ]; then printf '%s' "${!name}"; return 0; fi
+            done
+            return 1
+          }
+          export KEYSTORE_BASE64="$(pick S_ANDROID_KEYSTORE_B64 S_KEYSTORE_B64 || true)"
+          export GESTUREEVO_KEYSTORE_PASSWORD="$(pick S_ANDROID_STORE_PASS S_STORE_PASS || true)"
+          export GESTUREEVO_KEY_ALIAS="$(pick S_ANDROID_KEY_ALIAS S_KEY_ALIAS || true)"
+          export GESTUREEVO_KEY_PASSWORD="$(pick S_ANDROID_KEY_PASS S_KEY_PASS || true)"
           for name in KEYSTORE_BASE64 GESTUREEVO_KEYSTORE_PASSWORD GESTUREEVO_KEY_ALIAS GESTUREEVO_KEY_PASSWORD; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing signing secret: $name"; exit 1; fi
           done
